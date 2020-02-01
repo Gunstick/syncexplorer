@@ -6,15 +6,58 @@
 ; don't try to use it to open lower border, it's burning all CPU
 ; in a loop to wait for the switch position, so it will desync before
 screen:
+   move.w #$777,$ffff8240.w   ; unblack screen
+  ; allocate some memory (64k, for overscan stuff)
+  ;move.l  #-1,-(sp)          ; some buffery buff
+  ;move.w  #72,-(sp)             ; malloc
+  ;trap    #1                    ; gemdos
+  ;addq.l  #6,sp
+  ;tst.l   d0                    ; did it work?
+  ; IT NEVER WORKS; SO USING BSS INSTEAD
+  ;bne.s   .set_screenaddr
+  ;bsr printhexd0
+  ;bsr print
+  ;dc.b "malloc error",0         ; this will not show long on screen
+  ;even
+  ;jmp back                      ; screen end
+  move.l #screenmemory,d0
+.set_screenaddr:
+  add.l #256,d0                 ; move screenaddr somewhere inside the malloc part
+  clr.b d0                      ; lower byte is 0
+  move.l d0,screenaddr          ; save value
+  add.l #32000,d0               ; bottom part
+  move.w #-1,-(sp)              ; do not change rez
+  move.l d0,-(sp)               ; physbase
+  move.l d0,-(sp)               ; logbase same as physbase
+  move.w #5,-(sp)               ; setscreen
+  trap #14                      ; xbios
+  add.l #12,sp
+  ; print some data to lower part
   jsr print
   dc.b 27,"H"   ; home
   dc.b 27,"c2"  ; color
-  dc.b "syncexplorer by Gunstick/ULM 2020/1/20",13,10
+  dc.b "Lower boder",13,10,"2",13,10,"3",13,10,"4",13,10,"5",13,10,"6",13,10,"7",13,10,"8",13,10,"9",0
+  even
+
+  ; put screen adress to upper part
+  move.l screenaddr,d0    ; get screen start
+  move.w #-1,-(sp)              ; do not change rez
+  move.l d0,-(sp)               ; physbase
+  move.l d0,-(sp)               ; logbase same as physbase
+  move.w #5,-(sp)               ; setscreen
+  trap #14                      ; xbios
+  add.l #12,sp
+  ; print status
+  jsr print
+  dc.b 27,"H"   ; home
+  dc.b 27,"c2"  ; color
+  dc.b "syncexplorer by Gunstick/ULM 2020/2/01",13,10
   dc.b "cursor keys to move",13,10
-  dc.b "L-shift: fast",13,10
+  dc.b "L-shift: fast move",13,10
   dc.b "Return: toggle switch on/off",13,10
   dc.b "Esc: 50/60 vs Lo/Hi",13,10
   dc.b "Tab: shift e-clock jitter adjust",13,10
+  dc.b 27,"J"
   dc.b 0 
   even
   ; wait for a vbl
@@ -45,14 +88,19 @@ woblen equ 4
   lea wobble,a0
   move.b wobmin,d2
 .pw:
-  sub.b d2,(a0)+    ; remove max
+  sub.b d2,(a0)+    ; remove max to get values between 0 and 4
 ;  move.b (a0),d0
 ;  bsr printhexd0
 ;  bsr print
 ;  dc.b 13,10,0
   even
   dbf d1,.pw
- 
+
+; install wobble rotator into VBL (and hope we never skip one) 
+; note that the init routines replace the original vbl by rte
+; so nothing to save here. Just plug it in
+  move.l #myvbl,$70.w
+; done!
   bra.s intodemo
                 lea     $ffff8209.w,a0                  ;Hardsync
                 moveq   #127,d1                         ;
@@ -61,6 +109,20 @@ woblen equ 4
                 move.b  (a0),d2                         ;
                 sub.b   d2,d1                           ;
                 lsr.l   d1,d1                           ;
+vbl_skip:   ; used to nudge the eclock wobble by one step
+  move.l #myvbl,$70.w   ; reestablish the original vbl routine
+  rte
+myvbl:
+  move.w d0,-(sp)
+  move.b wobble+0,d0
+  move.b wobble+1,wobble+0
+  move.b wobble+2,wobble+1
+  move.b wobble+3,wobble+2
+  move.b wobble+4,wobble+3
+  move.b d0,wobble+4
+  move.w (sp)+,d0
+  rte
+
 wobmin
   dc.b 0
   even
@@ -74,16 +136,10 @@ intodemo:
    move.w #$777,$ffff8240.w   ; unblack screen
   moveq #0,d0
 loop:
-  move.b wobble+0,d0
-  move.b wobble+1,wobble+0
-  move.b wobble+2,wobble+1
-  move.b wobble+3,wobble+2
-  move.b wobble+4,wobble+3
-  move.b d0,wobble+4
-skip_wobble:
+  move.b wobble+0,d0   ; add value between 0 and 4, just try until it's not wobbling at start
   move.b #4,d1 
   sub.b d0,d1
-  stop #$2300
+  stop #$2300    ; hmm, we may be 1 vbl late with the wobble adjust?
   lsl.b d1,d1
   move.w top_border_dbf,d0
   move.w d0,d1
@@ -171,10 +227,10 @@ fastmove:
   move.l d2,opener2
   bra.s print_value
 .n1:
-  cmpi.b  #$f,d0   ; return: toggle opener
+  cmpi.b  #$f,d0   ; return: nudge eclock wobble
   bne.s .nf
-  moveq #0,d0
-  bra skip_wobble
+  move.l #vbl_skip,$70.w 
+  bra.s print_value
 .nf:
   cmpi.b  #$2a,d0   ; shift: fast
   bne.s .n2a
@@ -260,8 +316,16 @@ printhexd0:
   dc.b "        ",13,0
   even
 
-
+  DATA
 pal:
   dc.w $000,$555,$555,$555,$555,$555,$555,$555,$555,$555,$555,$555,$555,$555,$555,$555
 top_border_dbf:
   dc.w ($595+40)*4
+  BSS
+screenaddr:
+  dc.l 0
+
+  ds.b 256
+screenmemory:
+  ds.b 32000*2
+  ds.b 256
